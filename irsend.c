@@ -10,7 +10,7 @@
 #include "irsendpru_bin.h"
 
 const char *argp_program_version =
-        "irsend 0.1";
+        "irsend 0.2";
 
 /* Program documentation. */
 static char doc[] =
