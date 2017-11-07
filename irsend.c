@@ -186,7 +186,7 @@ int main(int argc, char *argv[])
         }
         if (arguments.code_count <6 || arguments.code_count > 199 || arguments.code_count %2 != 0)
         {
-                printf("Invalid code length!\n");
+                fprintf(stderr,"Invalid code length!\n");
                 exit(0);
         }
 
@@ -195,7 +195,7 @@ int main(int argc, char *argv[])
         ret = prussdrv_open(PRU_EVTOUT_0);
 
         if(ret != 0) {
-                printf("Failed to open PRUSS driver!\n");
+                fprintf(stderr,"Failed to open PRUSS driver!\n");
                 return ret;
         }
 
@@ -213,6 +213,7 @@ int main(int argc, char *argv[])
         // Fill the data ram
 
         uint16_t j;
+        uint16_t burst_pair_count = 0;
         uint16_t code;
         float loop_delay;
 
@@ -229,9 +230,11 @@ int main(int argc, char *argv[])
                         break;
                 case 2:
                         prussDataRam->burst_pair_sequence_1_count = code;
+                        burst_pair_count = code*2;
                         break;
                 case 3:
                         prussDataRam->burst_pair_sequence_2_count = code;
+                        burst_pair_count += code*2;
                         break;
                 default:
                         // no of times around a 10ns delay loop;
@@ -239,6 +242,19 @@ int main(int argc, char *argv[])
                         break;
                 }
         }
+
+        if (burst_pair_count != j-4)
+        {
+          fprintf(stderr,"Invalid burst pair count!\n%d stated vs %d\n",burst_pair_count,j-4);
+          exit(0);
+        }
+
+        if (j<4 || j > 199)
+        {
+                fprintf(stderr,"Burst pair count out of range: %d\n",j);
+                exit(0);
+        }
+
 
         prussDataRam->burst2_repeats = arguments.burst2_repeats;
 
@@ -250,15 +266,10 @@ int main(int argc, char *argv[])
                 printf("Freq: %04X\n",*(uint16_t*)ptr); ptr+=2;
                 printf("Burst1: %04X\n",*(uint16_t*)ptr); ptr+=2;
                 printf("Burst2: %04X\n",*(uint16_t*)ptr); ptr+=2;
-                for (int i=0; i < j; i++) {
+                for (int i=0; i < j-4; i++) {
                         printf("Codes: %04X\n",*(uint16_t*)ptr); ptr+=2;
                 }
-        }
-
-        if (j<4 || j > 199)
-        {
-                printf("Invalid code length2: %d\n",j);
-                exit(0);
+                printf("\nReturned Registers\n");
         }
 
         __sync_synchronize();

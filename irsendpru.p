@@ -62,7 +62,10 @@ Start:
   LBBO r0, r5, 0, 12 ; load 8 32bit words into registers
   ADD r5, r5, 12; ; Make r5 point to first data word
   QBNE NotPronto, r1.w0, 0 ; only works for Pronto 0000 pattern
+  QBEQ DoBurst2, r2.w0, 0 ; skip if no burst 1
   doBurst ; Do Burst 1
+DoBurst2:
+  QBEQ Finished, r2.w2, 0 ; skip if no burst 2
   MOV r6, r5 ; Save ptr to the start of burst 2
 RepeatBurst2:
   MOV r2.w0, r2.w2 ; load the burst2 count
