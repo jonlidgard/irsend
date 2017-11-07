@@ -10,7 +10,7 @@
 #include "irsendpru_bin.h"
 
 const char *argp_program_version =
-        "irsend 0.2";
+        "irsend 0.3";
 
 /* Program documentation. */
 static char doc[] =
@@ -34,7 +34,9 @@ static struct argp_option options[] = {
         {0,0,0,0, "" },
         {"repeat", 'r', "COUNT", OPTION_ARG_OPTIONAL,
          "Repeat the output COUNT (default 1) times"},
-         {"file",   'f', "FILE", 0,
+         {"freq",   'F', "FREQUENCY", OPTION_ARG_OPTIONAL,
+         "Override output frequency in kHz - e.g. F40.1" },
+         {"file",   'f', "FILE", OPTION_ARG_OPTIONAL,
    "Use codes file <default irsend.codes>" },
         {"protocol", 'p', "ID", OPTION_ARG_OPTIONAL,
          "Message protocol id (default 1)"},
@@ -49,6 +51,7 @@ struct arguments
         int burst2_repeats;
         int protocol_id;
         int code_count;
+        float frequency;
         char *codes_file;
         char **codes;
 };
@@ -68,6 +71,9 @@ parse_opt (int key, char *arg, struct argp_state *state)
                 break;
         case 'r':
                 arguments->burst2_repeats = arg ? atoi (arg) : 1;
+                break;
+        case 'F':
+                arguments->frequency = strtof(arg, NULL);
                 break;
         case 'f':
                 arguments->codes_file = arg;
@@ -144,6 +150,7 @@ int main(int argc, char *argv[])
 
         /* Default values. */
         arguments.debug = 0;
+        arguments.frequency =0;
         arguments.burst2_repeats = 1;
         arguments.protocol_id = 1;
         arguments.codes_file = (char *)default_codes_file;
@@ -181,13 +188,13 @@ int main(int argc, char *argv[])
                 else
                 {
                         fprintf(stderr, "No 'name' setting in configuration file.\n");
-                        exit(0);
+                        exit(1);
                 }
         }
         if (arguments.code_count <6 || arguments.code_count > 199 || arguments.code_count %2 != 0)
         {
                 fprintf(stderr,"Invalid code length!\n");
-                exit(0);
+                exit(1);
         }
 
         // First, initialize the driver and open the kernel device
@@ -243,16 +250,21 @@ int main(int argc, char *argv[])
                 }
         }
 
+        if (arguments.frequency > 0 && arguments.frequency <= 50000) // 50mHz!
+        {
+          prussDataRam->pronto_carrier_freq = (uint16_t)(50000.0 / arguments.frequency);
+        }
+
         if (burst_pair_count != j-4)
         {
           fprintf(stderr,"Invalid burst pair count!\n%d stated vs %d\n",burst_pair_count,j-4);
-          exit(0);
+          exit(1);
         }
 
         if (j<4 || j > 199)
         {
                 fprintf(stderr,"Burst pair count out of range: %d\n",j);
-                exit(0);
+                exit(1);
         }
 
 
@@ -307,5 +319,5 @@ int main(int argc, char *argv[])
         prussdrv_exit();
 
 
-        exit(1);
+        exit(0);
 }
