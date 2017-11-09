@@ -8,7 +8,7 @@
 
 /*
 PRU Data ram format - filled in by irsend.c
-00 - r0    <repeats> - no of times to repeat burst sequence 2 (simulating holding the button down)
+00 - r0    <repeats> - no of times to repeat sequence (simulating holding the button down)
 04 - r1.w0 <pattern> - pronto pattern type - only 0000 types valid
 06 - r1.w2 <carrier frequency> - code * 24.1246 / 2 - e.g. 40khz = 25us = 1250
 08 - r2.w0 <burst1> - no of burst pairs in 1st sequence
@@ -76,7 +76,27 @@ RepeatBurst2:
   JMP Finished
 
 NotPronto:
+JMP Finished
+;QBNE NotUnmodulated, r1.w0, 0x0100
+  ; Todo
 
+NotUnmodulated:
+;  QBNE NotRC5, r1.w0, 0x5000
+  ; Todo
+
+NotRC5:
+;  QBNE NotRC5x, r1.w0, 0x5001
+  ; Todo
+
+NotRC5x:
+;  QBNE NotRC6Mode0, r1.w0, 0x6000
+  ; Todo
+
+NotRC6Mode0:
+;QBNE NotRaw, r1.w0, 0xffff
+
+
+NotRaw:
 Finished:
   MOV r8,0 ; Save the registers back to ram for debugging
   SBBO r0,r8,0,32
