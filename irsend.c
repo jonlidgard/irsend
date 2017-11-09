@@ -111,32 +111,39 @@ void debug_output(void *memPtr,int codes_count, bool debug, bool after)
 /* Parse our arguments; every option seen by parse_opt will
    be reflected in arguments. */
 
-void parse_args(int argc, char *argv[], arguments_t *arguments, config_t *pcfg)
+void onExit()
+{
+        if (&cfg)
+                config_destroy(&cfg);
+}
+
+void parse_args(int argc, char *argv[], arguments_t *arguments)
 {
   const char *default_codes_file = "irsend.codes";
   const char *etc_codes_file = "/etc/irsend.codes";
 
   /* Default values. */
   arguments->debug = 0;
-  arguments->frequency =0;
+  arguments->frequency = 0;
   arguments->burst2_repeats = 1;
   arguments->protocol_id = 1;
   arguments->codes_file = (char *)default_codes_file;
 
   argp_parse (&argp, argc, argv, 0, 0, arguments);
 
-  config_init(pcfg);
+  config_init(&cfg);
+  atexit(onExit); // destroy cfg on exit
+
 
   /* Read the codes file of it exists. (local dir else /etc/) */
-  if(!config_read_file(pcfg, arguments->codes_file))
+  if(!config_read_file(&cfg, arguments->codes_file))
   {
-          if(!config_read_file(pcfg, etc_codes_file))
+          if(!config_read_file(&cfg, etc_codes_file))
           {
-                  if (config_error_file(pcfg))
+                  if (config_error_file(&cfg))
                   {
-                          fprintf(stderr, "%s:%d - %s\n", config_error_file(pcfg),
-                                  config_error_line(pcfg), config_error_text(pcfg));
-                          config_destroy(pcfg);
+                          fprintf(stderr, "%s:%d - %s\n", config_error_file(&cfg),
+                                  config_error_line(&cfg), config_error_text(&cfg));
                   }
           }
   }
@@ -145,13 +152,10 @@ void parse_args(int argc, char *argv[], arguments_t *arguments, config_t *pcfg)
 
 /* ------------------------------------------------------------------------- */
 
-
 int main(int argc, char *argv[])
 {
         tpruss_intc_initdata prussIntCInitData = PRUSS_INTC_INITDATA;
         PrussDataRam_t *ppruss_data_ram;
-        config_t cfg;
-//        config_setting_t *setting;
         int i, j;
         uint16_t burst_pair_count = 0;
         uint16_t code;
@@ -160,10 +164,10 @@ int main(int argc, char *argv[])
 
         // Get the pru ready
         if (pru_init(&prussIntCInitData, &ppruss_data_ram))
-          exit(1);
+          return(1);
 
         // Parse the command line
-        parse_args(argc, argv, &arguments, &cfg);
+        parse_args(argc, argv, &arguments);
 
         /* Command line (arguments.codes) can be either:
            a pronto hex list of codes e.g. 0000 0100 0001 0022 0105 0201.....
@@ -189,15 +193,13 @@ int main(int argc, char *argv[])
                 else
                 {
                         fprintf(stderr, "No %s setting in configuration file.\n", arguments.codes[0]);
-                        config_destroy(&cfg);
-                        exit(1);
+                        return(1);
                 }
         }
         if (arguments.code_count <6 || arguments.code_count > 199 || arguments.code_count %2 != 0)
         {
                 fprintf(stderr,"Invalid code length!\n");
-                config_destroy(&cfg);
-                exit(1);
+                return(1);
         }
 
 
@@ -240,17 +242,14 @@ int main(int argc, char *argv[])
         if (burst_pair_count != j-4)
         {
                 fprintf(stderr,"Invalid burst pair count!\n%d stated vs %d\n",burst_pair_count,j-4);
-                config_destroy(&cfg);
-                exit(1);
+                return(1);
         }
 
         if (j<4 || j > 199)
         {
                 fprintf(stderr,"Burst pair count out of range: %d\n",j);
-                config_destroy(&cfg);
-                exit(1);
+                return(1);
         }
-
 
         ppruss_data_ram->burst2_repeats = arguments.burst2_repeats;
 
@@ -260,7 +259,5 @@ int main(int argc, char *argv[])
 
         debug_output((void*)ppruss_data_ram, j, arguments.debug, 1);
 
-        config_destroy(&cfg);
-
-        exit(0);
+        return(0);
 }
