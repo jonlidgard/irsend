@@ -58,7 +58,7 @@ typedef struct
 
   /* ------------------------------------------------------------------------- */
 
-  config_t cfg;
-  config_setting_t *setting;
+//  config_t cfg;
+//  config_setting_t *setting;
   char codes_string[1000];
   static char *pcodes[200];

@@ -4,57 +4,13 @@
 #include <string.h>
 #include <stdbool.h>
 #include <argp.h>
-#include <prussdrv.h>
 #include <libconfig.h>
-#include <pruss_intc_mapping.h>
-#include "irsendpru_bin.h"
 
-const char *argp_program_version =
-        "irsend 0.3";
+#include "irsend_pru_bin.h"
+#include "irsend.h"
+#include "irpru.h"
 
-/* Program documentation. */
-static char doc[] =
-        "For Beaglebone Microcontrollers only.\nSends an IR command \
-  \vCommand can be either a list of pronto hex codes\n\
-e.g. irsend 0000 006c 0022 0002 0156 00ac 0016 0016 0016....\n\
-or a command from the irsend.codes file - e.g. irsend onkyo.on\n\
-irsend will look in the present directory or /etc/ for the\n\
-optional codes file unless one is specified with -f\n\n\
-Uses PRU0 via the pru_uio overlay.\n\
-Ensure you have an appropriate cape loaded\n\
-(e.g. cape_universal + config-pin p8.12 pruout)\n\
-Connect P8_12 to an IR LED (via a transistor)\n\
-** MUST BE RUN WITH ROOT PRIVILEGES **";
-
-/* A description of the arguments we accept. */
-static char args_doc[] = "[COMMAND]";
-/* The options we understand. */
-static struct argp_option options[] = {
-        {"debug", 'd', 0, 0, "Produce debug output" },
-        {0,0,0,0, "" },
-        {"repeat", 'r', "COUNT", OPTION_ARG_OPTIONAL,
-         "Repeat the output COUNT (default 1) times"},
-         {"freq",   'F', "FREQUENCY", OPTION_ARG_OPTIONAL,
-         "Override output frequency in kHz - e.g. F40.1" },
-         {"file",   'f', "FILE", OPTION_ARG_OPTIONAL,
-   "Use codes file <default irsend.codes>" },
-        {"protocol", 'p', "ID", OPTION_ARG_OPTIONAL,
-         "Message protocol id (default 1)"},
-        { 0 }
-};
-
-
-/* Used by main to communicate with parse_opt. */
-struct arguments
-{
-        int debug;
-        int burst2_repeats;
-        int protocol_id;
-        int code_count;
-        float frequency;
-        char *codes_file;
-        char **codes;
-};
+/* ------------------------------------------------------------------------- */
 
 /* Parse a single option. */
 static error_t
@@ -62,7 +18,7 @@ parse_opt (int key, char *arg, struct argp_state *state)
 {
         /* Get the input argument from argp_parse, which we
            know is a pointer to our arguments structure. */
-        struct arguments *arguments = state->input;
+        arguments_t *arguments = state->input;
 
         switch (key)
         {
@@ -78,7 +34,6 @@ parse_opt (int key, char *arg, struct argp_state *state)
         case 'f':
                 arguments->codes_file = arg;
                 break;
-
         case 'p':
                 arguments->protocol_id = arg ? atoi (arg) : 1;
                 break;
@@ -98,23 +53,10 @@ parse_opt (int key, char *arg, struct argp_state *state)
         return 0;
 }
 
-/* Our argp parser. */
-static struct argp argp = { options, parse_opt, args_doc, doc };
-
-typedef struct {
-        uint32_t burst2_repeats;
-        uint16_t pattern_id; // always 0 for raw data capture
-        uint16_t pronto_carrier_freq; // ( f = 1000000 / (n * .241246) kHz )
-        uint16_t burst_pair_sequence_1_count;
-        uint16_t burst_pair_sequence_2_count;
-        uint16_t data[200];
-} PrussDataRam_t;
-
-
-config_t cfg;
-config_setting_t *setting;
-char codes_string[1000];
-char *pcodes[200];
+/* ------------------------------------------------------------------------- */
+/* Convert a string containing space separated items
+   into an string array of items
+ */
 
 int convertCodeStringToArray(char ***codes, const char *str)
 {
@@ -135,93 +77,133 @@ int convertCodeStringToArray(char ***codes, const char *str)
         return i;
 }
 
+/* ------------------------------------------------------------------------- */
+
+void debug_output(void *memPtr,int codes_count, bool debug, bool after)
+{
+        void *ptr = memPtr;
+        if (debug)
+        {
+                if (!after)
+                {
+                        printf("Repeats: %08X\n",*(uint32_t*)ptr); ptr+=4;
+                        printf("Pattern: %04X\n",*(uint16_t*)ptr); ptr+=2;
+                        printf("Freq: %04X\n",*(uint16_t*)ptr); ptr+=2;
+                        printf("Burst1: %04X\n",*(uint16_t*)ptr); ptr+=2;
+                        printf("Burst2: %04X\n",*(uint16_t*)ptr); ptr+=2;
+                        for (int i=0; i < codes_count-4; i++)
+                        {
+                                printf("Codes: %04X\n",*(uint16_t*)ptr); ptr+=2;
+                        }
+                }
+                else
+                {
+                        printf("\nReturned Registers\n");
+                        for(int r=0; r < 8; r++)
+                        {
+                                printf("R%d: %08X, %d\n",r,*(uint32_t*)ptr, *(uint32_t*)ptr); ptr+=4;
+                        }
+                }
+        }
+}
+
+/* ------------------------------------------------------------------------- */
+/* Parse our arguments; every option seen by parse_opt will
+   be reflected in arguments. */
+
+void parse_args(int argc, char *argv[], arguments_t *arguments, config_t *pcfg)
+{
+  const char *default_codes_file = "irsend.codes";
+  const char *etc_codes_file = "/etc/irsend.codes";
+
+  /* Default values. */
+  arguments->debug = 0;
+  arguments->frequency =0;
+  arguments->burst2_repeats = 1;
+  arguments->protocol_id = 1;
+  arguments->codes_file = (char *)default_codes_file;
+
+  argp_parse (&argp, argc, argv, 0, 0, arguments);
+
+  config_init(pcfg);
+
+  /* Read the codes file of it exists. (local dir else /etc/) */
+  if(!config_read_file(pcfg, arguments->codes_file))
+  {
+          if(!config_read_file(pcfg, etc_codes_file))
+          {
+                  if (config_error_file(pcfg))
+                  {
+                          fprintf(stderr, "%s:%d - %s\n", config_error_file(pcfg),
+                                  config_error_line(pcfg), config_error_text(pcfg));
+                          config_destroy(pcfg);
+                  }
+          }
+  }
+
+}
+
+/* ------------------------------------------------------------------------- */
+
 
 int main(int argc, char *argv[])
 {
         tpruss_intc_initdata prussIntCInitData = PRUSS_INTC_INITDATA;
-        PrussDataRam_t * prussDataRam;
+        PrussDataRam_t *ppruss_data_ram;
         config_t cfg;
-        config_setting_t *setting;
-        int ret, i;
-        struct arguments arguments;
+//        config_setting_t *setting;
+        int i, j;
+        uint16_t burst_pair_count = 0;
+        uint16_t code;
+        arguments_t arguments;
         const char *str;
-        const char *default_codes_file = "irsend.codes";
-        const char *etc_codes_file = "/etc/irsend.codes";
 
-        /* Default values. */
-        arguments.debug = 0;
-        arguments.frequency =0;
-        arguments.burst2_repeats = 1;
-        arguments.protocol_id = 1;
-        arguments.codes_file = (char *)default_codes_file;
+        // Get the pru ready
+        if (pru_init(&prussIntCInitData, &ppruss_data_ram))
+          exit(1);
 
-        /* Parse our arguments; every option seen by parse_opt will
-           be reflected in arguments. */
-        argp_parse (&argp, argc, argv, 0, 0, &arguments);
+        // Parse the command line
+        parse_args(argc, argv, &arguments, &cfg);
 
-        if (arguments.code_count == 1)
+        /* Command line (arguments.codes) can be either:
+           a pronto hex list of codes e.g. 0000 0100 0001 0022 0105 0201.....
+            determined by an initial 4 digit numeric value which can be zero
+           a raw data string of mark/space timings e.g. +500 -1200 +330 -2000 or 500 1200 330 2000
+            determined by a numeric value with or without a +/- sign which > 0
+           a list of codes from the codes file e.g. onkyo.on d10 tv.on d5 projector.on
+            detmined by a non-numeric value (d10 is a delay in 10ths of sec before executing
+           next command) & can be fed from a file e.g. irsend < automate.txt
+           /* ------------------------------------------------------------------------- */
+
+
+//        code_type = analyse_command_args(arguments.codes[0]);
+        if (arguments.code_count  == 1)
         {
-                config_init(&cfg);
-
-                /* Read the file. If there is an error, report it and exit. */
-                if(!config_read_file(&cfg, arguments.codes_file))
-                {
-                  if(!config_read_file(&cfg, etc_codes_file))
-                  {
-                        fprintf(stderr, "%s:%d - %s\n", config_error_file(&cfg),
-                                config_error_line(&cfg), config_error_text(&cfg));
-                        config_destroy(&cfg);
-                        return(EXIT_FAILURE);
-                  }
-                }
-
-
-/* Get the store name. */
                 if(config_lookup_string(&cfg, arguments.codes[0], &str))
                 {
                         if (arguments.debug)
                                 printf("Pronto Code: %s\n\n", str);
 
                         arguments.code_count = convertCodeStringToArray(&arguments.codes, str);
-//		arguments.codes = &pcodes[0];
                 }
                 else
                 {
-                        fprintf(stderr, "No 'name' setting in configuration file.\n");
+                        fprintf(stderr, "No %s setting in configuration file.\n", arguments.codes[0]);
+                        config_destroy(&cfg);
                         exit(1);
                 }
         }
         if (arguments.code_count <6 || arguments.code_count > 199 || arguments.code_count %2 != 0)
         {
                 fprintf(stderr,"Invalid code length!\n");
+                config_destroy(&cfg);
                 exit(1);
         }
-
-        // First, initialize the driver and open the kernel device
-        prussdrv_init();
-        ret = prussdrv_open(PRU_EVTOUT_0);
-
-        if(ret != 0) {
-                fprintf(stderr,"Failed to open PRUSS driver!\n");
-                return ret;
-        }
-
-        // Set up the interrupt mapping so we can wait on INTC later
-        prussdrv_pruintc_init(&prussIntCInitData);
-        // Map PRU DATARAM; reinterpret the pointer type as a pointer to
-        // our defined memory mapping struct. We could also use uint8_t *
-        // to access the RAM as a plain array of bytes, or uint32_t * to
-        // access it as words.
-        prussdrv_map_prumem(PRUSS0_PRU0_DATARAM, (void * *)&prussDataRam);
-        // Manually initialize PRU DATARAM - this struct is mapped to the
-        // PRU, so these assignments actually modify DATARAM directly.
 
 
         // Fill the data ram
 
-        uint16_t j;
-        uint16_t burst_pair_count = 0;
-        uint16_t code;
+
         float loop_delay;
 
         for (j = 0; arguments.codes[j] && j < 200; j++)
@@ -230,94 +212,55 @@ int main(int argc, char *argv[])
                 switch (j)
                 {
                 case 0:
-                        prussDataRam->pattern_id = code;
+                        ppruss_data_ram->pattern_id = code;
                         break;
                 case 1:
-                        prussDataRam->pronto_carrier_freq = code * 24.1246 / 2;
+                        ppruss_data_ram->pronto_carrier_freq = code * 24.1246 / 2;
                         break;
                 case 2:
-                        prussDataRam->burst_pair_sequence_1_count = code;
+                        ppruss_data_ram->burst_pair_sequence_1_count = code;
                         burst_pair_count = code*2;
                         break;
                 case 3:
-                        prussDataRam->burst_pair_sequence_2_count = code;
+                        ppruss_data_ram->burst_pair_sequence_2_count = code;
                         burst_pair_count += code*2;
                         break;
                 default:
                         // no of times around a 10ns delay loop;
-                        prussDataRam->data[j-4] = code;
+                        ppruss_data_ram->data[j-4] = code;
                         break;
                 }
         }
 
         if (arguments.frequency > 0 && arguments.frequency <= 50000) // 50mHz!
         {
-          prussDataRam->pronto_carrier_freq = (uint16_t)(50000.0 / arguments.frequency);
+                ppruss_data_ram->pronto_carrier_freq = (uint16_t)(50000.0 / arguments.frequency);
         }
 
         if (burst_pair_count != j-4)
         {
-          fprintf(stderr,"Invalid burst pair count!\n%d stated vs %d\n",burst_pair_count,j-4);
-          exit(1);
+                fprintf(stderr,"Invalid burst pair count!\n%d stated vs %d\n",burst_pair_count,j-4);
+                config_destroy(&cfg);
+                exit(1);
         }
 
         if (j<4 || j > 199)
         {
                 fprintf(stderr,"Burst pair count out of range: %d\n",j);
+                config_destroy(&cfg);
                 exit(1);
         }
 
 
-        prussDataRam->burst2_repeats = arguments.burst2_repeats;
+        ppruss_data_ram->burst2_repeats = arguments.burst2_repeats;
 
-        void *ptr = prussDataRam;
-        if (arguments.debug)
-        {
-                printf("Repeats: %08X\n",*(uint32_t*)ptr); ptr+=4;
-                printf("Pattern: %04X\n",*(uint16_t*)ptr); ptr+=2;
-                printf("Freq: %04X\n",*(uint16_t*)ptr); ptr+=2;
-                printf("Burst1: %04X\n",*(uint16_t*)ptr); ptr+=2;
-                printf("Burst2: %04X\n",*(uint16_t*)ptr); ptr+=2;
-                for (int i=0; i < j-4; i++) {
-                        printf("Codes: %04X\n",*(uint16_t*)ptr); ptr+=2;
-                }
-                printf("\nReturned Registers\n");
-        }
+        debug_output((void*)ppruss_data_ram, j, arguments.debug, 0);
 
-        __sync_synchronize();
+        pru_run_code(prussPru0Code, sizeof prussPru0Code);
 
-        prussdrv_exec_code(0, prussPru0Code, sizeof prussPru0Code);
+        debug_output((void*)ppruss_data_ram, j, arguments.debug, 1);
 
-        // Wait for INTC from the PRU, signaling it's about to HALT...
-        prussdrv_pru_wait_event(PRU_EVTOUT_0);
-        // Clear the event: if you don't do this you will not be able to
-        // wait again.
-        prussdrv_pru_clear_event(PRU_EVTOUT_0, PRU0_ARM_INTERRUPT);
-        // Make absolutely sure we read sum again below, after the PRU
-        // writes to it. Otherwise, the compiler or hardware might cache
-        // the value we wrote above and just return us that. Again, not
-        // actually necessary because the compiler inserts an implicit
-        // fence at prussdrv_pru_wait_event(...), but a good habit.
-        __sync_synchronize();
-
-        ptr = prussDataRam;
-        if (arguments.debug)
-        {
-                for(int r=0; r < 8; r++) {
-                        printf("R%d: %08X, %d\n",r,*(uint32_t*)ptr, *(uint32_t*)ptr); ptr+=4;
-                }
-        }
-        // Read the result returned by the PRU
-        // Disable the PRU and exit; if we don't do this the PRU may
-        // continue running after our program quits! The TI kernel driver
-        // is not very careful about cleaning up after us.
-        // Since it is possible for the PRU to trash memory and otherwise
-        // cause lockups or crashes, especially if it's manipulating
-        // peripherals or writing to shared DDR, this is important!
-        prussdrv_pru_disable(0);
-
-        prussdrv_exit();
-
+        config_destroy(&cfg);
 
         exit(0);
 }
